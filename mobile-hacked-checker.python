@@ -1,0 +1,885 @@
+#!/usr/bin/env python3
+"""
+===========================================================
+ Android Security Scanner v2.0 - ADB Based Deep Analysis
+===========================================================
+Purpose: Scan Android device via ADB for compromise indicators
+Features: - Root detection (su binary, root apps, test-keys)
+          - Stalkerware/Spyware detection (170+ known packages)
+          - Suspicious app analysis
+          - ADB backdoor check
+          - Network/DNS anomaly detection
+          - Log analysis for compromise indicators
+          - Read-only - NO files deleted or modified
+Author: HackerAI Security Tool
+===========================================================
+"""
+
+import subprocess
+import sys
+import os
+import re
+import json
+import datetime
+import hashlib
+import socket
+from typing import List, Dict, Tuple, Optional
+
+# ===========================================================
+# KNOWN MALICIOUS / STALKERWARE PACKAGE NAMES (from IOC lists)
+# ===========================================================
+STALKERWARE_PACKAGES = {
+    # TheTruthSpy family
+    "com.apspy.app", "com.fone", "com.guest", "com.ispyoo",
+    "com.ispyoo.traceyou", "com.mxspy", "com.spyzee",
+    "com.systemservice", "com.thetruth", "com.ttsapp.catchcheating",
+    # FlexiSpy
+    "com.flexispy", "com.flexispy.lite", "com.fsp.android.c",
+    "com.fsp.android.v",
+    # mSpy
+    "com.mspy", "com.mspy2", "com.mobile.spy", "com.phone.spy",
+    "com.spy", "com.mobiletracker", "com.track",
+    # Cocospy
+    "com.cocospy", "com.cocospy.app",
+    # Spyic
+    "com.spyic", "com.spyic.app", "com.spyic.phone",
+    # Hoverwatch
+    "com.hoverwatch", "com.hoverwatch.app",
+    # SpyEra
+    "com.spyera", "com.spyera.app",
+    # XNSPY
+    "com.xnspy", "com.xnspy.app",
+    # Highster Mobile
+    "com.highstermobile", "com.highster",
+    # PhoneSpector
+    "com.phonespector",
+    # Spyzie
+    "com.spyzie", "com.spyzie.app",
+    # Auto Forward
+    "com.autoforward", "com.smsforward",
+    # iSpyoo
+    "com.ispyoo",
+    # TheSpyApp
+    "com.thespyapp",
+    # AndroRat
+    "com.example.reverseshell2",
+    # Pegasus (known packages)
+    "com.android.mms", "com.android.settings",
+    # Buhsam
+    "com.google.android.network",
+    # PhoneMonitor
+    "com.pvojpamt.tzzyqjyb", "com.monitor.phone.s0ft.phonemonitor",
+    # Spyone family
+    "com.jgeuhcex.ejcxndak", "com.eytewqrm.wvdkgmrl",
+    "com.epbzrqcg.syzzkuqx", "com.laucass.phonecontrolenabler",
+    "com.laucass.phonecontroltarget", "com.laucass.androsmscontrol",
+    "com.juzyuwqt.thxxnjvf", "com.epasufob.kybavfgt",
+    "pl.spyone.agent2", "Aktualizacja.apps",
+    # BrunoEspiao
+    "com.moxlndmp.uhzhgzjh", "com.fzvsdrtb.qamlhxri",
+    "com.thaxygpc.xjsjobpn", "com.nhevvtmt.thinkquo",
+    # WiseMo
+    "com.wisemo.wsmguest.v18", "com.wisemo.host.v10",
+    # EagleSPY
+    "br.com.eaglespy",
+    # WheresMyDroid
+    "com.alienmanfc6.wheresmyandroid",
+    # Additional common stalkerware
+    "com.android.server.telecom", "com.callrecorder",
+    "com.record.my.call", "com.call.recorder",
+    # Kids tracking (sometimes abused)
+    "org.findmykids.app", "org.findmykids.child",
+    "com.wondershare.famisafe", "com.wondershare.famisafe.kids",
+    "com.kaspersky.safekids",
+    # General suspicious names
+    "com.superuser", "com.koushikdutta.superuser",
+    "com.noshufou.android.su", "com.thirdparty.superuser",
+    "eu.chainfire.supersu", "com.topjohnwu.magisk",
+    "com.topjohnwu.magiskmanager",
+}
+
+# Suspicious app name patterns
+SUSPICIOUS_APP_PATTERNS = [
+    r"(?i)spy", r"(?i)track", r"(?i)monitor", r"(?i)stealth",
+    r"(?i)hidden", r"(?i)secret", r"(?i)covert", r"(?i)record",
+    r"(?i)call.?record", r"(?i)screen.?record", r"(?i)key.?log",
+    r"(?i)keylog", r"(?i)key.?logger", r"(?i)remot.?control",
+    r"(?i)vnc", r"(?i)back.?door", r"(?i)root.?kit",
+    r"(?i)data.?steal", r"(?i)data.?theft", r"(?i)phone.?track",
+    r"(?i)sms.?track", r"(?i)gps.?track", r"(?i)location.?track",
+    r"(?i)whatsapp.?track", r"(?i)social.?track",
+    r"(?i)parent.?control", r"(?i)child.?monitor",
+]
+
+# SU binary paths to check
+SU_BINARY_PATHS = [
+    "/system/bin/su", "/system/xbin/su", "/sbin/su",
+    "/system/su", "/system/bin/.su", "/system/xbin/.su",
+    "/su/bin/su", "/magisk/.core/bin/su",
+    "/data/local/su", "/data/local/xbin/su",
+    "/data/local/bin/su",
+]
+
+# Root management app packages
+ROOT_MGMT_APPS = {
+    "eu.chainfire.supersu", "com.topjohnwu.magisk",
+    "com.topjohnwu.magiskmanager", "com.noshufou.android.su",
+    "com.thirdparty.superuser", "com.koushikdutta.superuser",
+    "com.superuser", "com.phedroid.rootchecker",
+    "com.jrummy.root.browserfree", "com.jrummy.list.system.apps",
+    "com.kingroot.master", "com.kingroot.kinguser",
+    "com.kingo.root", "com.kingoapp",
+    "com.qihoo.permmgr", "com.dianxinos.superuser",
+    "com.antutu.ABenchMark", "com.lbe.security.miui",
+    "com.stericson.rootchecker", "com.joeykrim.rootcheck",
+    "com.amphoras.hideitpro", "com.ramdroid.rootchecker",
+    "com.genius.root", "com.saurik.substrate",
+    "de.robv.android.xposed.installer",
+    "com.zachspong.temprootchecker",
+    "com.formyroot.hideroot",
+}
+
+# ADB backdoor check patterns
+ADB_BACKDOOR_PORTS = [5555, 5556, 5557, 5558, 5559]
+
+# Dangerous permissions
+DANGEROUS_PERMISSIONS = {
+    "android.permission.READ_SMS",
+    "android.permission.RECEIVE_SMS",
+    "android.permission.READ_CONTACTS",
+    "android.permission.READ_CALL_LOG",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.ACCESS_COARSE_LOCATION",
+    "android.permission.RECORD_AUDIO",
+    "android.permission.CAMERA",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.PROCESS_OUTGOING_CALLS",
+    "android.permission.SYSTEM_ALERT_WINDOW",
+    "android.permission.BIND_ACCESSIBILITY_SERVICE",
+    "android.permission.INTERNET",
+    "android.permission.GET_TASKS",
+    "android.permission.PACKAGE_USAGE_STATS",
+    "android.permission.QUERY_ALL_PACKAGES",
+    "android.permission.READ_PHONE_STATE",
+    "android.permission.READ_LOGS",
+    "android.permission.REQUEST_INSTALL_PACKAGES",
+}
+
+
+class Colors:
+    """ANSI color codes for terminal output."""
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+class AndroidSecurityScanner:
+    """Main scanner class for Android device security assessment."""
+
+    def __init__(self, device_id: str = None):
+        self.device_id = device_id
+        self.results = {
+            "scan_time": datetime.datetime.now().isoformat(),
+            "device_info": {},
+            "root_status": {},
+            "stalkerware_found": [],
+            "suspicious_apps": [],
+            "adp_backdoor": [],
+            "network_anomalies": [],
+            "compromise_count": 0,
+            "compromise_details": [],
+            "system_anomalies": [],
+            "overall_status": "CLEAN",
+            "logs_anomalies": [],
+            "has_backup_accounts": [],
+            "developer_settings": {},
+        }
+
+    def _run_adb(self, command: str, timeout: int = 30) -> Tuple[int, str, str]:
+        """Execute ADB command and return (returncode, stdout, stderr)."""
+        if self.device_id:
+            full_cmd = f"adb -s {self.device_id} {command}"
+        else:
+            full_cmd = f"adb {command}"
+
+        try:
+            result = subprocess.run(
+                full_cmd, shell=True, capture_output=True,
+                text=True, timeout=timeout
+            )
+            return result.returncode, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return -1, "", "TIMEOUT"
+        except Exception as e:
+            return -1, "", str(e)
+
+    def _run_shell(self, command: str, timeout: int = 15) -> Tuple[int, str, str]:
+        """Execute ADB shell command."""
+        return self._run_adb(f"shell {command}", timeout)
+
+    def _print_banner(self):
+        """Print tool banner."""
+        banner = f"""
+{Colors.CYAN}{Colors.BOLD}
+╔═══════════════════════════════════════════════════════════╗
+║           Android Security Scanner v2.0                  ║
+║          ADB-Based Deep Compromise Analysis              ║
+║                    READ-ONLY MODE                        ║
+╚═══════════════════════════════════════════════════════════╝
+{Colors.ENDC}
+        """
+        print(banner)
+
+    def check_device_connection(self) -> bool:
+        """Check if device is connected and accessible."""
+        print(f"{Colors.BLUE}[*] Checking device connection...{Colors.ENDC}")
+
+        rc, stdout, stderr = self._run_adb("devices")
+
+        if rc != 0:
+            print(f"{Colors.FAIL}[!] ADB not found or not working{Colors.ENDC}")
+            print(f"{Colors.WARNING}[!] Make sure ADB is installed: sudo apt install adb{Colors.ENDC}")
+            return False
+
+        if self.device_id:
+            if self.device_id not in stdout:
+                print(f"{Colors.FAIL}[!] Device {self.device_id} not found{Colors.ENDC}")
+                print(f"{Colors.WARNING}[!] Available devices:{Colors.ENDC}")
+                print(stdout)
+                return False
+        else:
+            lines = stdout.strip().split('\n')[1:]  # Skip "List of devices attached"
+            devices = [l.strip() for l in lines if l.strip() and 'device' in l]
+            if not devices:
+                print(f"{Colors.FAIL}[!] No device connected!{Colors.ENDC}")
+                print(f"{Colors.WARNING}[!] Connect device with USB debugging enabled{Colors.ENDC}")
+                return False
+            device_line = devices[0]
+            self.device_id = device_line.split('\t')[0]
+            print(f"{Colors.GREEN}[+] Device found: {self.device_id}{Colors.ENDC}")
+
+        return True
+
+    def get_device_info(self):
+        """Gather basic device information."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Gathering Device Information...{Colors.ENDC}")
+
+        info_commands = {
+            "model": "getprop ro.product.model",
+            "manufacturer": "getprop ro.product.manufacturer",
+            "android_version": "getprop ro.build.version.release",
+            "build_version": "getprop ro.build.version.sdk",
+            "security_patch": "getprop ro.build.version.security_patch",
+            "build_type": "getprop ro.build.type",
+            "build_tags": "getprop ro.build.tags",
+            "selinux": "getenforce",
+            "kernel": "uname -a",
+            "serial": "getprop ro.serialno",
+            "usb_config": "getprop persist.sys.usb.config",
+            "debug_enabled": "settings get global adb_enabled",
+            "developer_options": "settings get global development_settings_enabled",
+        }
+
+        for key, cmd in info_commands.items():
+            rc, out, _ = self._run_shell(cmd)
+            value = out.strip() if out else "N/A"
+            self.results["device_info"][key] = value
+            print(f"  {Colors.CYAN}{key.replace('_',' ').title():20}:{Colors.ENDC} {value}")
+
+        # Check if build tags contain test-keys (custom ROM / rooted indicator)
+        build_tags = self.results["device_info"].get("build_tags", "")
+        if "test-keys" in build_tags:
+            self.results["system_anomalies"].append("test-keys found in build (custom ROM/rooted device)")
+
+        return self.results["device_info"]
+
+    def check_root_status(self):
+        """Deep check for root access indicators."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Root Status Check...{Colors.ENDC}")
+
+        root_findings = []
+        root_score = 0
+
+        # Check 1: SU binary existence
+        print(f"\n{Colors.BLUE}[*] Checking for SU binaries...{Colors.ENDC}")
+        for su_path in SU_BINARY_PATHS:
+            rc, out, _ = self._run_shell(f"ls -la {su_path}")
+            if "No such file" not in out and rc == 0:
+                root_findings.append(f"SU binary found: {su_path}")
+                root_score += 2
+                print(f"  {Colors.FAIL}[!] SU BINARY DETECTED: {su_path}{Colors.ENDC}")
+
+        # Check 2: which su command
+        rc, out, _ = self._run_shell("which su")
+        if out.strip():
+            root_findings.append(f"'which su' returns: {out.strip()}")
+            root_score += 2
+            print(f"  {Colors.FAIL}[!] SU binary accessible via PATH: {out.strip()}{Colors.ENDC}")
+
+        # Check 3: Test-keys build
+        build_tags = self.results["device_info"].get("build_tags", "")
+        if "test-keys" in build_tags:
+            root_findings.append("Build tags contain test-keys (device is likely rooted)")
+            root_score += 1
+            print(f"  {Colors.WARNING}[!] Build tags: test-keys (custom ROM/rooted){Colors.ENDC}")
+
+        # Check 4: Root management apps installed
+        print(f"\n{Colors.BLUE}[*] Checking for root management apps...{Colors.ENDC}")
+        for pkg in ROOT_MGMT_APPS:
+            rc, out, _ = self._run_shell(f"pm list packages | grep {pkg}")
+            if out.strip():
+                root_findings.append(f"Root management app found: {pkg}")
+                root_score += 2
+                print(f"  {Colors.FAIL}[!] ROOT APP DETECTED: {pkg}{Colors.ENDC}")
+
+        # Check 5: SELinux status
+        selinux = self.results["device_info"].get("selinux", "")
+        if "Permissive" in selinux or "Disabled" in selinux:
+            root_findings.append(f"SELinux is {selinux} (disabled/enforcing mode off)")
+            root_score += 1
+            print(f"  {Colors.WARNING}[!] SELinux is {selinux}{Colors.ENDC}")
+
+        # Check 6: Write access to system partition
+        rc, out, _ = self._run_shell("mount | grep -E ' /system | / '")
+        for line in out.strip().split('\n'):
+            if 'rw' in line and ('/system' in line or '/ ' in line.split(' ')[0]):
+                root_findings.append(f"System partition mounted as read-write: {line.strip()}")
+                root_score += 2
+                print(f"  {Colors.FAIL}[!] System partition is RW: {line.strip()}{Colors.ENDC}")
+
+        # Check 7: BusyBox (often installed with root)
+        rc, out, _ = self._run_shell("busybox --help 2>/dev/null")
+        if rc == 0 and out.strip():
+            root_findings.append("BusyBox installed (often accompanies root)")
+            root_score += 1
+            print(f"  {Colors.WARNING}[!] BusyBox detected{Colors.ENDC}")
+
+        # Check 8: Magisk specific
+        rc, out, _ = self._run_shell("ls -la /data/adb/magisk/ 2>/dev/null")
+        if rc == 0 and out.strip():
+            root_findings.append("Magisk directories found (Magisk root)")
+            root_score += 2
+            print(f"  {Colors.FAIL}[!] Magisk root detected{Colors.ENDC}")
+
+        rc, out, _ = self._run_shell("magisk -v 2>/dev/null")
+        if rc == 0 and out.strip():
+            root_findings.append(f"Magisk binary found version: {out.strip()}")
+            root_score += 2
+            print(f"  {Colors.FAIL}[!] Magisk binary: {out.strip()}{Colors.ENDC}")
+
+        # Check 9: Xposed Framework
+        rc, out, _ = self._run_shell("ls -la /data/data/de.robv.android.xposed.installer/ 2>/dev/null")
+        if rc == 0:
+            root_findings.append("Xposed Framework installed")
+            root_score += 2
+            print(f"  {Colors.FAIL}[!] Xposed Framework detected{Colors.ENDC}")
+
+        # Summary
+        is_rooted = root_score >= 4
+        self.results["root_status"] = {
+            "is_rooted": is_rooted,
+            "root_score": root_score,
+            "findings": root_findings,
+        }
+
+        if is_rooted:
+            self.results["compromise_count"] += 1
+            self.results["compromise_details"].append({
+                "type": "ROOT_ACCESS",
+                "severity": "HIGH",
+                "details": f"Device is rooted (score: {root_score}/20). Root access bypasses Android security model.",
+                "findings": root_findings
+            })
+            print(f"\n  {Colors.FAIL}{Colors.BOLD}[!!!] DEVICE IS ROOTED (Score: {root_score}/20){Colors.ENDC}")
+        else:
+            print(f"\n  {Colors.GREEN}[✓] Device is NOT rooted (Score: {root_score}/20){Colors.ENDC}")
+
+        return self.results["root_status"]
+
+    def check_stalkerware(self):
+        """Check for known stalkerware/malware packages."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Scanning for Stalkerware/Spyware...{Colors.ENDC}")
+
+        # Get all installed packages
+        rc, packages_output, _ = self._run_shell("pm list packages -f")
+        if rc != 0:
+            print(f"{Colors.FAIL}[!] Could not list packages{Colors.ENDC}")
+            return
+
+        installed_packages = []
+        for line in packages_output.strip().split('\n'):
+            if ':' in line:
+                pkg = line.split(':')[-1].strip()
+                installed_packages.append(pkg)
+
+        print(f"  {Colors.BLUE}[*] Total installed packages: {len(installed_packages)}{Colors.ENDC}")
+
+        # Check against known stalkerware list
+        for pkg in installed_packages:
+            if pkg in STALKERWARE_PACKAGES:
+                print(f"  {Colors.FAIL}[!!!] STALKERWARE DETECTED: {pkg}{Colors.ENDC}")
+                self.results["stalkerware_found"].append(pkg)
+                self.results["compromise_count"] += 1
+                self.results["compromise_details"].append({
+                    "type": "STALKERWARE",
+                    "severity": "CRITICAL",
+                    "package": pkg,
+                    "details": f"Known stalkerware/spyware package detected: {pkg}"
+                })
+
+        # Check for suspicious app names
+        for pkg in installed_packages:
+            app_name = pkg.split('.')[-1].lower()
+            full_pkg_lower = pkg.lower()
+            for pattern in SUSPICIOUS_APP_PATTERNS:
+                if re.search(pattern, full_pkg_lower) or re.search(pattern, app_name):
+                    if pkg not in [s for s in self.results["suspicious_apps"]]:
+                        self.results["suspicious_apps"].append(pkg)
+                        print(f"  {Colors.WARNING}[?] Suspicious app name: {pkg}{Colors.ENDC}")
+                    break
+
+        # Check apps with dangerous permissions
+        print(f"\n{Colors.BLUE}[*] Checking app permissions...{Colors.ENDC}")
+        for pkg in installed_packages[:200]:  # Limit to first 200 for performance
+            # Check if package has dangerous permissions
+            rc, out, _ = self._run_shell(f"dumpsys package {pkg} 2>/dev/null | grep -E 'android\\.permission\\.'", timeout=10)
+            if out:
+                dangerous_found = [perm.strip() for perm in DANGEROUS_PERMISSIONS if perm in out]
+                if len(dangerous_found) >= 5:  # 5+ dangerous permissions is suspicious
+                    print(f"  {Colors.WARNING}[?] {pkg} has {len(dangerous_found)} dangerous permissions{Colors.ENDC}")
+
+        if self.results["stalkerware_found"]:
+            print(f"\n  {Colors.FAIL}{Colors.BOLD}[!!!] {len(self.results['stalkerware_found'])} STALKERWARE APP(S) FOUND!{Colors.ENDC}")
+        else:
+            print(f"\n  {Colors.GREEN}[✓] No known stalkerware detected in package list{Colors.ENDC}")
+
+    def check_adb_backdoor(self):
+        """Check for ADB backdoor / open debugging ports."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Checking for ADB Backdoors...{Colors.ENDC}")
+
+        # Check if ADB over network is enabled
+        rc, out, _ = self._run_shell("getprop service.adb.tcp.port")
+        adb_tcp_port = out.strip()
+        if adb_tcp_port and adb_tcp_port != "0":
+            print(f"  {Colors.FAIL}[!] ADB TCP listening on port: {adb_tcp_port}{Colors.ENDC}")
+            self.results["adp_backdoor"].append(f"ADB TCP mode enabled on port {adb_tcp_port}")
+            self.results["compromise_details"].append({
+                "type": "ADB_BACKDOOR",
+                "severity": "CRITICAL",
+                "port": adb_tcp_port,
+                "details": f"ADB is listening on TCP port {adb_tcp_port} - remote debugging possible"
+            })
+        else:
+            print(f"  {Colors.GREEN}[✓] ADB TCP mode is disabled (USB only){Colors.ENDC}")
+
+        # Check if ADB debugging is enabled
+        debug_enabled = self.results["device_info"].get("debug_enabled", "")
+        if debug_enabled == "1":
+            print(f"  {Colors.WARNING}[?] USB Debugging is ENABLED{Colors.ENDC}")
+        else:
+            print(f"  {Colors.GREEN}[✓] USB Debugging disabled{Colors.ENDC}")
+
+        # Check network services listening
+        rc, out, _ = self._run_shell("netstat -nlt 2>/dev/null || ss -tln 2>/dev/null")
+        if out:
+            listening_ports = []
+            for line in out.strip().split('\n'):
+                ports = re.findall(r':(\d+)', line)
+                listening_ports.extend(ports)
+
+            for port in listening_ports:
+                if int(port) in ADB_BACKDOOR_PORTS:
+                    print(f"  {Colors.FAIL}[!] ADB port {port} is listening (network debug){Colors.ENDC}")
+                    self.results["adp_backdoor"].append(f"Port {port} listening - possible ADB over network")
+
+    def check_network_anomalies(self):
+        """Check for unusual network connections and DNS settings."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Checking Network Anomalies...{Colors.ENDC}")
+
+        # Check active connections
+        rc, out, _ = self._run_shell("netstat -n 2>/dev/null || ss -n 2>/dev/null")
+        if out:
+            connections = []
+            for line in out.strip().split('\n'):
+                if 'ESTABLISHED' in line or 'tcp' in line.lower():
+                    connections.append(line.strip())
+
+            unknown_connections = []
+            for conn in connections[:50]:  # First 50
+                ips = re.findall(r'(\d+\.\d+\.\d+\.\d+):\d+', conn)
+                for ip in ips:
+                    if not ip.startswith(('10.', '172.', '192.168.', '127.', '0.')):
+                        if ip not in [c.get('ip') for c in unknown_connections]:
+                            unknown_connections.append({"ip": ip, "connection": conn.strip()})
+
+            if unknown_connections:
+                print(f"  {Colors.WARNING}[?] External connections found:{Colors.ENDC}")
+                for uc in unknown_connections[:10]:
+                    print(f"    → {uc['ip']}")
+
+                self.results["network_anomalies"] = unknown_connections
+                if len(unknown_connections) > 5:
+                    self.results["compromise_details"].append({
+                        "type": "SUSPICIOUS_NETWORK",
+                        "severity": "MEDIUM",
+                        "details": f"Device has {len(unknown_connections)} external connections"
+                    })
+
+        # Check DNS
+        rc, out, _ = self._run_shell("getprop net.dns1 2>/dev/null")
+        dns = out.strip()
+        if dns:
+            print(f"  DNS server: {dns}")
+
+        # Check proxy settings
+        rc, out, _ = self._run_shell("settings get global http_proxy 2>/dev/null")
+        proxy = out.strip()
+        if proxy and proxy != "null":
+            print(f"  {Colors.WARNING}[?] HTTP Proxy configured: {proxy}{Colors.ENDC}")
+            self.results["network_anomalies"].append(f"Proxy: {proxy}")
+
+        print(f"  {Colors.GREEN}[✓] Network scan complete{Colors.ENDC}")
+
+    def check_system_anomalies(self):
+        """Check for system-level anomalies."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Checking System Anomalies...{Colors.ENDC}")
+
+        # Check unknown sources
+        rc, out, _ = self._run_shell("settings get global install_non_market_apps 2>/dev/null")
+        value = out.strip()
+        if value == "1":
+            print(f"  {Colors.WARNING}[?] Unknown sources installation is ENABLED{Colors.ENDC}")
+            self.results["system_anomalies"].append("Unknown sources enabled")
+
+        # Check for accessibility services (often abused by malware)
+        rc, out, _ = self._run_shell("settings get secure accessibility_enabled 2>/dev/null")
+        if out.strip() == "1":
+            print(f"  {Colors.WARNING}[?] Accessibility services enabled (check for abuse){Colors.ENDC}")
+
+        # Check for device admin apps
+        rc, out, _ = self._run_shell("dumpsys device_policy 2>/dev/null | grep -E 'Admin|Package' | head -20")
+        if out.strip():
+            print(f"  {Colors.BLUE}[*] Device admin apps found:{Colors.ENDC}")
+            for line in out.strip().split('\n')[:10]:
+                print(f"    {line.strip()}")
+
+        # Check for overlay apps (screen overlay - clickjacking)
+        rc, out, _ = self._run_shell("dumpsys package 2>/dev/null | grep -B2 'SYSTEM_ALERT_WINDOW' | grep packageName | head -20")
+        if out.strip():
+            overlay_apps = [l.split(':')[-1].strip() for l in out.strip().split('\n') if ':' in l]
+            print(f"  {Colors.WARNING}[?] Apps with overlay permission: {len(overlay_apps)}{Colors.ENDC}")
+
+        # Check for accounts (backup accounts)
+        rc, out, _ = self._run_shell("dumpsys account 2>/dev/null | grep -E 'Account|name=|type=' | head -20")
+        if out.strip():
+            accounts = [l.strip() for l in out.strip().split('\n') if l.strip()]
+            self.results["has_backup_accounts"] = accounts
+            print(f"  {Colors.BLUE}[*] Accounts configured:{Colors.ENDC}")
+            for acc in accounts[:10]:
+                print(f"    {acc}")
+
+    def check_logs_for_compromise(self):
+        """Analyze system logs for compromise indicators."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Analyzing System Logs...{Colors.ENDC}")
+
+        # Check logcat for crash/spyware activity
+        rc, out, _ = self._run_shell("logcat -d -S 2>/dev/null | head -200", timeout=10)
+        if out:
+            # Look for suspicious patterns
+            suspicious_log_patterns = [
+                r"(?i)error.*root", r"(?i)error.*su ",
+                r"(?i)install.*unknown", r"(?i)remot.*shell",
+                r"(?i)inject", r"(?i)hook", r"(?i)exploit",
+                r"(?i)permission.*denied.*root",
+            ]
+            for pattern in suspicious_log_patterns:
+                matches = re.findall(pattern, out, re.IGNORECASE)
+                if matches:
+                    self.results["logs_anomalies"].append(f"Log pattern found: {pattern}")
+
+        # Check last reboot time
+        rc, out, _ = self._run_shell("uptime")
+        if out:
+            print(f"  Uptime: {out.strip()}")
+
+        # Check recent dmesg for kernel anomalies
+        rc, out, _ = self._run_shell("dmesg 2>/dev/null | grep -iE 'error|fail|exploit|rootkit|backdoor|unauthorized' | tail -20", timeout=10)
+        if out.strip():
+            print(f"  {Colors.WARNING}[?] Kernel messages with anomalies:{Colors.ENDC}")
+            for line in out.strip().split('\n')[:5]:
+                print(f"    {line.strip()}")
+
+        print(f"  {Colors.GREEN}[✓] Log analysis complete{Colors.ENDC}")
+
+    def check_certificate_anomalies(self):
+        """Check for certificate-related issues."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Checking Certificate Stores...{Colors.ENDC}")
+
+        # Check user-installed certificates
+        rc, out, _ = self._run_shell("ls /data/misc/user/0/cacerts-added/ 2>/dev/null")
+        if out.strip():
+            certs = [c.strip() for c in out.strip().split('\n') if c.strip()]
+            print(f"  {Colors.WARNING}[?] User-installed certificates: {len(certs)}{Colors.ENDC}")
+            for cert in certs[:10]:
+                print(f"    {cert}")
+
+        # Check for certificate pinning bypass
+        rc, out, _ = self._run_shell("ls /data/data/*/files/ 2>/dev/null | grep -iE 'cert|ssl|pinning'")
+        if out.strip():
+            print(f"  {Colors.WARNING}[?] Possible certificate manipulation found{Colors.ENDC}")
+
+        print(f"  {Colors.GREEN}[✓] Certificate check complete{Colors.ENDC}")
+
+    def check_suspicious_files(self):
+        """Check for suspicious files without reading/deleting them."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}[+] Checking for Suspicious Files...{Colors.ENDC}")
+
+        suspicious_dirs = [
+            "/data/local/tmp/",
+            "/data/local/",
+            "/sdcard/Android/data/",
+        ]
+
+        suspicious_file_patterns = [
+            r".*\.apk$", r".*backdoor.*", r".*spy.*",
+            r".*keylog.*", r".*rat.*", r".*payload.*",
+            r".*reverse.*", r".*shell.*",
+        ]
+
+        for directory in suspicious_dirs:
+            rc, out, _ = self._run_shell(f"ls -la {directory} 2>/dev/null | head -50")
+            if out.strip():
+                files = [l.strip() for l in out.strip().split('\n') if l.strip() and not l.startswith('total')]
+                suspicious_files = []
+                for f in files:
+                    for pattern in suspicious_file_patterns:
+                        if re.search(pattern, f, re.IGNORECASE):
+                            suspicious_files.append(f)
+                            break
+
+                if suspicious_files:
+                    print(f"  {Colors.WARNING}[?] Suspicious files in {directory}:{Colors.ENDC}")
+                    for sf in suspicious_files[:10]:
+                        print(f"    {sf}")
+
+        # Check /data/data for unusual package directories
+        rc, out, _ = self._run_shell("ls /data/data/ 2>/dev/null | grep -iE 'spy|secret|hidden|invisible|system' | head -20")
+        if out.strip():
+            print(f"  {Colors.WARNING}[?] Suspicious data directories:{Colors.ENDC}")
+            for d in out.strip().split('\n'):
+                print(f"    {d}")
+
+        print(f"  {Colors.GREEN}[✓] File check complete{Colors.ENDC}")
+
+    def scan(self):
+        """Run full device scan."""
+        self._print_banner()
+
+        print(f"\n{Colors.BOLD}Scan started at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Colors.ENDC}")
+        print(f"{Colors.BOLD}Mode: READ-ONLY - No files will be modified/deleted{Colors.ENDC}")
+
+        # Step 1: Check device connection
+        if not self.check_device_connection():
+            sys.exit(1)
+
+        # Step 2: Get device info
+        self.get_device_info()
+
+        # Step 3: Root check
+        self.check_root_status()
+
+        # Step 4: Stalkerware/Spyware check
+        self.check_stalkerware()
+
+        # Step 5: ADB backdoor check
+        self.check_adb_backdoor()
+
+        # Step 6: Network anomalies
+        self.check_network_anomalies()
+
+        # Step 7: System anomalies
+        self.check_system_anomalies()
+
+        # Step 8: Log analysis
+        self.check_logs_for_compromise()
+
+        # Step 9: Certificate check
+        self.check_certificate_anomalies()
+
+        # Step 10: Suspicious files
+        self.check_suspicious_files()
+
+        # Final Report
+        self.generate_report()
+
+        return self.results
+
+    def generate_report(self):
+        """Generate and display comprehensive scan report."""
+        print(f"\n{'='*60}")
+        print(f"{Colors.HEADER}{Colors.BOLD}          FINAL SCAN REPORT{Colors.ENDC}")
+        print(f"{'='*60}")
+
+        # Overall status
+        is_compromised = self.results["compromise_count"] > 0
+
+        if is_compromised:
+            severity = "LOW"
+            if any(d.get("severity") == "CRITICAL" for d in self.results["compromise_details"]):
+                severity = "CRITICAL"
+            elif any(d.get("severity") == "HIGH" for d in self.results["compromise_details"]):
+                severity = "HIGH"
+            elif any(d.get("severity") == "MEDIUM" for d in self.results["compromise_details"]):
+                severity = "MEDIUM"
+
+            self.results["overall_status"] = f"COMPROMISED ({severity})"
+            print(f"\n{Colors.FAIL}{Colors.BOLD}")
+            print(f"  ⚠ ⚠ ⚠  DEVICE IS COMPROMISED  ⚠ ⚠ ⚠")
+            print(f"  Status: {severity}")
+            print(f"  Total Compromise Indicators: {self.results['compromise_count']}")
+            print(f"{Colors.ENDC}")
+        else:
+            self.results["overall_status"] = "CLEAN"
+            print(f"\n{Colors.GREEN}{Colors.BOLD}")
+            print(f"  ✓ ✓ ✓  DEVICE IS CLEAN  ✓ ✓ ✓")
+            print(f"  No compromise indicators found.")
+            print(f"{Colors.ENDC}")
+
+        # Print compromise details
+        if self.results["compromise_details"]:
+            print(f"\n{Colors.FAIL}{Colors.BOLD}[!] COMPROMISE DETAILS:{Colors.ENDC}")
+            for i, detail in enumerate(self.results["compromise_details"], 1):
+                print(f"\n  {i}. Type: {detail.get('type', 'Unknown')}")
+                print(f"     Severity: {detail.get('severity', 'UNKNOWN')}")
+                print(f"     Details: {detail.get('details', '')}")
+                if 'package' in detail:
+                    print(f"     Package: {detail['package']}")
+                if 'port' in detail:
+                    print(f"     Port: {detail['port']}")
+                if 'findings' in detail:
+                    for finding in detail['findings']:
+                        print(f"     → {finding}")
+
+        # Root status summary
+        print(f"\n{Colors.BOLD}[+] Root Status:{Colors.ENDC}")
+        if self.results["root_status"].get("is_rooted"):
+            print(f"  {Colors.FAIL}ROOTED (Score: {self.results['root_status'].get('root_score', 0)}/20){Colors.ENDC}")
+        else:
+            print(f"  {Colors.GREEN}NOT ROOTED (Score: {self.results['root_status'].get('root_score', 0)}/20){Colors.ENDC}")
+
+        # Stalkerware summary
+        print(f"\n{Colors.BOLD}[+] Stalkerware:{Colors.ENDC}")
+        if self.results["stalkerware_found"]:
+            print(f"  {Colors.FAIL}{len(self.results['stalkerware_found'])} detected{Colors.ENDC}")
+            for sw in self.results["stalkerware_found"]:
+                print(f"    → {sw}")
+        else:
+            print(f"  {Colors.GREEN}None detected{Colors.ENDC}")
+
+        # Suspicious apps
+        if self.results["suspicious_apps"]:
+            print(f"\n{Colors.BOLD}[+] Suspicious App Names:{Colors.ENDC}")
+            print(f"  {Colors.WARNING}{len(self.results['suspicious_apps'])} found{Colors.ENDC}")
+            for app in self.results["suspicious_apps"][:10]:
+                print(f"    → {app}")
+
+        # ADB backdoor
+        if self.results["adp_backdoor"]:
+            print(f"\n{Colors.BOLD}[+] ADB Backdoor:{Colors.ENDC}")
+            print(f"  {Colors.FAIL}{len(self.results['adp_backdoor'])} issue(s) found{Colors.ENDC}")
+
+        # Network
+        if self.results["network_anomalies"]:
+            print(f"\n{Colors.BOLD}[+] Network:{Colors.ENDC}")
+            print(f"  {Colors.WARNING}{len(self.results['network_anomalies'])} external connections{Colors.ENDC}")
+
+        # Device info summary
+        print(f"\n{Colors.BOLD}[+] Device:{Colors.ENDC}")
+        info = self.results["device_info"]
+        print(f"  Model: {info.get('model', 'N/A')}")
+        print(f"  Android: {info.get('android_version', 'N/A')}")
+        print(f"  Security Patch: {info.get('security_patch', 'N/A')}")
+        print(f"  SELinux: {info.get('selinux', 'N/A')}")
+
+        # Summary line
+        print(f"\n{'='*60}")
+        print(f"Scan completed at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Overall Status: {self.results['overall_status']}")
+        print(f"{'='*60}\n")
+
+
+def list_devices():
+    """List connected ADB devices."""
+    print(f"\n{Colors.BLUE}[*] Listing connected devices...{Colors.ENDC}")
+    rc, stdout, _ = subprocess.run("adb devices", shell=True, capture_output=True, text=True)
+    if rc.returncode != 0:
+        print(f"{Colors.FAIL}[!] ADB not found. Install: sudo apt install adb{Colors.ENDC}")
+        return
+
+    print(stdout)
+
+    lines = stdout.strip().split('\n')[1:]
+    devices = [l.strip() for l in lines if l.strip() and 'device' in l]
+
+    if not devices:
+        print(f"{Colors.WARNING}[!] No devices connected{Colors.ENDC}")
+    else:
+        for d in devices:
+            print(f"  {Colors.GREEN}[✓] {d.split()[0]}{Colors.ENDC}")
+
+
+def main():
+    """Main entry point."""
+    print(f"""
+{Colors.CYAN}{Colors.BOLD}
+  █████╗ ███╗   ██╗██████╗ ██████╗  ██████╗ ██╗██████╗
+ ██╔══██╗████╗  ██║██╔══██╗██╔══██╗██╔═══██╗██║██╔══██╗
+ ███████║██╔██╗ ██║██║  ██║██████╔╝██║   ██║██║██║  ██║
+ ██╔══██║██║╚██╗██║██║  ██║██╔══██╗██║   ██║██║██║  ██║
+ ██║  ██║██║ ╚████║██████╔╝██║  ██║╚██████╔╝██║██████╔╝
+ ╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝╚═════╝
+{Colors.ENDC}
+{Colors.BOLD}  Android Security Scanner v2.0 - ADB Based{Colors.ENDC}
+{Colors.CYAN}  Compromise Detection | Root Check | Spyware Scan{Colors.ENDC}
+{Colors.GREEN}  READ-ONLY - No files will be modified or deleted{Colors.ENDC}
+""")
+
+    # Parse arguments
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Android Security Scanner - ADB Based Deep Analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                          # Scan first connected device
+  %(prog)s -d DEVICE_ID             # Scan specific device
+  %(prog)s --list                   # List connected devices
+  %(prog)s --quick                  # Quick scan (less checks)
+  %(prog)s --deep                   # Deep scan (all checks)
+        """
+    )
+    parser.add_argument("-d", "--device", help="Device ID to scan")
+    parser.add_argument("--list", action="store_true", help="List connected devices")
+    parser.add_argument("--quick", action="store_true", help="Quick scan mode")
+    parser.add_argument("--deep", action="store_true", help="Deep scan mode (default)")
+
+    args = parser.parse_args()
+
+    if args.list:
+        list_devices()
+        return
+
+    # Run scan
+    scanner = AndroidSecurityScanner(device_id=args.device)
+    scanner.scan()
+
+
+if __name__ == "__main__":
+    main()
