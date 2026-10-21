@@ -63,8 +63,7 @@ STALKERWARE_PACKAGES = {
     "com.thespyapp",
     # AndroRat
     "com.example.reverseshell2",
-    # Pegasus (known packages)
-    "com.android.mms", "com.android.settings",
+    # Generic Android system packages are not reliable spyware indicators by name alone.
     # Buhsam
     "com.google.android.network",
     # PhoneMonitor
@@ -84,8 +83,8 @@ STALKERWARE_PACKAGES = {
     "br.com.eaglespy",
     # WheresMyDroid
     "com.alienmanfc6.wheresmyandroid",
-    # Additional common stalkerware
-    "com.android.server.telecom", "com.callrecorder",
+    # Additional identifiers should be verified before being treated as stalkerware.
+    "com.callrecorder",
     "com.record.my.call", "com.call.recorder",
     # Kids tracking (sometimes abused)
     "org.findmykids.app", "org.findmykids.child",
@@ -746,11 +745,11 @@ class AndroidSecurityScanner:
             print(f"  Total Compromise Indicators: {self.results['compromise_count']}")
             print(f"{Colors.ENDC}")
         else:
-            self.results["overall_status"] = "CLEAN"
+            self.results["overall_status"] = "NO INDICATORS FOUND"
             print(f"\n{Colors.GREEN}{Colors.BOLD}")
-            print(f"  ✓ ✓ ✓  DEVICE IS CLEAN  ✓ ✓ ✓")
-            print(f"  No compromise indicators found.")
+            print(f"  ✓  NO KNOWN COMPROMISE INDICATORS FOUND")
             print(f"{Colors.ENDC}")
+            print(f"{Colors.WARNING}  This is not proof that the device is safe. Checks may be incomplete or blocked by Android permissions.{Colors.ENDC}")
 
         # Print compromise details
         if self.results["compromise_details"]:
