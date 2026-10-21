@@ -67,3 +67,14 @@ This is a learning project and should be considered a work in progress. Test it 
 ---
 
 *Learn. Build. Test responsibly.*
+
+## Project documentation
+
+- [Security policy](SECURITY.md) — safe use, privacy, and reporting guidance.
+- [Contributing guide](CONTRIBUTING.md) — how to propose and test changes.
+- [Changelog](CHANGELOG.md) — notable project updates.
+- [Python checks workflow](.github/workflows/python-checks.yml) — checks that the scanner source parses on pushes and pull requests.
+
+## Development status
+
+Automated CI checks Python syntax only. They do not verify detection accuracy or replace testing with a real Android device. No real-device compatibility claim is made without testing evidence.
