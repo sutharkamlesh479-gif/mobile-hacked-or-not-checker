@@ -23,6 +23,7 @@ import json
 import datetime
 import hashlib
 import socket
+import shlex
 from typing import List, Dict, Tuple, Optional
 
 # ===========================================================
@@ -204,7 +205,7 @@ class AndroidSecurityScanner:
     def _run_adb(self, command: str, timeout: int = 30) -> Tuple[int, str, str]:
         """Execute ADB command and return (returncode, stdout, stderr)."""
         if self.device_id:
-            full_cmd = f"adb -s {self.device_id} {command}"
+            full_cmd = f"adb -s {shlex.quote(self.device_id)} {command}"
         else:
             full_cmd = f"adb {command}"
 
@@ -332,7 +333,7 @@ class AndroidSecurityScanner:
         # Check 4: Root management apps installed
         print(f"\n{Colors.BLUE}[*] Checking for root management apps...{Colors.ENDC}")
         for pkg in ROOT_MGMT_APPS:
-            rc, out, _ = self._run_shell(f"pm list packages | grep {pkg}")
+            rc, out, _ = self._run_shell(f"pm list packages | grep -F -- {shlex.quote(pkg)}")
             if out.strip():
                 root_findings.append(f"Root management app found: {pkg}")
                 root_score += 2
