@@ -817,23 +817,23 @@ class AndroidSecurityScanner:
 
 def list_devices():
     """List connected ADB devices."""
-    print(f"\n{Colors.BLUE}[*] Listing connected devices...{Colors.ENDC}")
-    rc, stdout, _ = subprocess.run("adb devices", shell=True, capture_output=True, text=True)
-    if rc.returncode != 0:
-        print(f"{Colors.FAIL}[!] ADB not found. Install: sudo apt install adb{Colors.ENDC}")
+    print("[*] Listing connected ADB devices...")
+    try:
+        result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=15, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        print("[!] Could not run ADB: " + str(exc))
         return
-
-    print(stdout)
-
-    lines = stdout.strip().split('\n')[1:]
-    devices = [l.strip() for l in lines if l.strip() and 'device' in l]
-
+    if result.returncode != 0:
+        print("[!] ADB command failed: " + result.stderr.strip())
+        return
+    print(result.stdout)
+    lines = result.stdout.strip().split("\n")[1:]
+    devices = [line.strip() for line in lines if line.strip() and line.split()[-1] == "device"]
     if not devices:
-        print(f"{Colors.WARNING}[!] No devices connected{Colors.ENDC}")
+        print("[!] No authorized devices connected")
     else:
-        for d in devices:
-            print(f"  {Colors.GREEN}[✓] {d.split()[0]}{Colors.ENDC}")
-
+        for device in devices:
+            print("[+] Authorized device: " + device.split()[0])
 
 def main():
     """Main entry point."""
